@@ -1,0 +1,822 @@
+
+
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FaBカードDB リアルタイム検索</title>
+  <!-- 1) Supabase SDK を先に読み込み（deferでDOM構築後に実行、順序保持） -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+  <style>
+:root { --bg:#0b0f14; --card:#121821; --fg:#e6edf3; --muted:#9fb0c5; --accent:#3ea6ff; }
+html,body{height:100%}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP",sans-serif;background:var(--bg);color:var(--fg)}
+.wrap{max-width:1800px;margin:0 auto;padding:24px}
+h1{font-size:20px;margin:0 0 12px}
+.card{background:var(--card);border-radius:16px;box-shadow:0 6px 24px rgba(0,0,0,.3);padding:16px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+input[type="text"],select{background:#0f1520;color:var(--fg);border:1px solid #263243;border-radius:10px;padding:10px 12px;font-size:16px;outline:none}
+input[type="text"]{flex:1;min-width:260px}
+.hint{color:var(--muted);font-size:12px;margin-top:6px}
+
+/* テーブルの基本スタイル */
+table{
+  width:100%;
+  border-collapse:collapse;
+  margin-top:12px;
+  min-width:1300px;   /* ←列が多い時の最低幅 */
+}
+th,td{
+  padding:10px;
+  border-bottom:1px solid #243040;
+  text-align:left;
+  white-space:nowrap; /* ←改行せず1行表示 */
+}
+th{color:#b9c6d8;font-weight:600;font-size:13px}
+td{font-size:14px}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;color:#d4d4d4}
+
+.badge{display:inline-block;padding:2px 8px;border:1px solid #33465f;border-radius:999px;color:#cfe3ff;font-size:12px}
+.controls{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+button{background:#1b2736;color:#e6edf3;border:1px solid #2b3c52;border-radius:10px;padding:10px 12px;font-size:14px;cursor:pointer}
+button:disabled{opacity:.6;cursor:not-allowed}
+.right{margin-left:auto}
+.footer{color:var(--muted);font-size:12px;margin-top:10px}
+.count{color:#cfe3ff}
+.num-input{width:90px;background:#0f1520;color:#e6edf3;border:1px solid #2b3c52;border-radius:8px;padding:6px;text-align:right;}
+.wanted-input{width:90px;background:#0f1520;color:#e6edf3;border:1px solid #2b3c52;border-radius:8px;padding:6px;text-align:right;}
+.wanted-active{background:#2a1f05 !important;color:#ffd36a !important;border-color:#c98b22 !important;font-weight:800;}
+tr.wanted-row td.wanted-text{color:#ffd36a;font-weight:800;}
+.danger-btn{background:#3a1720;border-color:#6b2638;color:#ffd8df;}
+.wanted-filter-on{background:#4a3210;border-color:#c98b22;color:#ffd36a;font-weight:700;}
+.saved{color:#8fffa0;font-size:12px;}
+.saving{color:#ffd36a;font-size:12px;}
+.error{color:#ff7b7b;font-size:12px;}
+.updated-at{color:#d8e7ff;font-size:12px;}
+
+/* ===== 横スクロール用のスタイル ===== */
+.table-wrap{
+  overflow-x:auto;       /* テーブルが広いとき横スクロールを出す */
+}
+
+
+/* ===== Login ===== */
+.login-wrap{max-width:520px;margin:80px auto;padding:24px}
+.login-card{background:var(--card);border-radius:16px;box-shadow:0 6px 24px rgba(0,0,0,.3);padding:22px}
+.login-card h1{font-size:22px;margin:0 0 8px}
+.login-card p{color:var(--muted);font-size:13px;margin:0 0 18px}
+.login-card label{display:block;color:#b9c6d8;font-size:13px;margin:12px 0 6px}
+.login-card input{width:100%;box-sizing:border-box;background:#0f1520;color:var(--fg);border:1px solid #263243;border-radius:10px;padding:11px 12px;font-size:16px;outline:none}
+.login-actions{display:flex;gap:10px;align-items:center;margin-top:16px}
+.login-error{color:#ff7b7b;font-size:13px;margin-top:12px;min-height:18px}
+.topbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
+.user-pill{color:#cfe3ff;font-size:13px;border:1px solid #2b3c52;border-radius:999px;padding:6px 10px;background:#0f1520}
+
+</style>
+
+
+  <!-- 2) アプリ本体のスクリプト（defer） -->
+  <script defer>
+    function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+  // ========= ここを書き換え =========
+  const SUPABASE_URL = "https://sddzrpaiobrwpczzwhxv.supabase.co"; // 例: https://abcxyz.supabase.co （末尾スラなし）
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNkZHpycGFpb2Jyd3Bjenp3aHh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU0OTYxMTEsImV4cCI6MjA3MTA3MjExMX0.qZ88_mnWutdLVttboeztwKiw0IU1736zng99qtA_CZk";               // Project Settings → API → anon public
+  // ==================================
+
+  // DOM構築後に実行（deferでも順序は保たれるが念のため）
+  window.addEventListener('DOMContentLoaded', () => {
+    if (!window.supabase) { alert('Supabase SDKの読み込みに失敗しました。ネットワークやCDNブロックを確認してください。'); return; }
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const $ = (id) => document.getElementById(id);
+
+    let appStarted = false;
+
+    async function initAuth(){
+      const { data } = await supabase.auth.getSession();
+      if (data?.session) {
+        showApp(data.session.user);
+        return;
+      }
+      showLogin();
+    }
+
+    function showLogin(){
+      const loginWrap = $("loginWrap");
+      const appWrap = $("appWrap");
+      if (loginWrap) loginWrap.style.display = "block";
+      if (appWrap) appWrap.style.display = "none";
+    }
+
+    function showApp(user){
+      const loginWrap = $("loginWrap");
+      const appWrap = $("appWrap");
+      const userEmail = $("userEmail");
+      if (loginWrap) loginWrap.style.display = "none";
+      if (appWrap) appWrap.style.display = "block";
+      if (userEmail) userEmail.textContent = user?.email || "ログイン中";
+      $("env").textContent = SUPABASE_URL;
+      if (!appStarted) {
+        appStarted = true;
+        loadRarities().finally(triggerSearch);
+      }
+    }
+
+    async function doLogin(){
+      const email = ($("loginEmail")?.value || "").trim();
+      const password = $("loginPassword")?.value || "";
+      const errorEl = $("loginError");
+      const btn = $("loginBtn");
+
+      if (!email || !password) {
+        if (errorEl) errorEl.textContent = "メールアドレスとパスワードを入力してください。";
+        return;
+      }
+
+      if (errorEl) errorEl.textContent = "";
+      if (btn) { btn.disabled = true; btn.textContent = "ログイン中…"; }
+
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+      if (btn) { btn.disabled = false; btn.textContent = "ログイン"; }
+
+      if (error) {
+        console.error(error);
+        if (errorEl) errorEl.textContent = "ログインに失敗しました。メールアドレス・パスワードを確認してください。";
+        return;
+      }
+
+      showApp(data.user);
+    }
+
+    async function doLogout(){
+      await supabase.auth.signOut();
+      appStarted = false;
+      $("rows").innerHTML = "";
+      showLogin();
+    }
+
+    $("loginBtn")?.addEventListener("click", doLogin);
+    $("loginPassword")?.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+    $("loginEmail")?.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+    $("logoutBtn")?.addEventListener("click", doLogout);
+
+    // 既知のレアリティ順（将来DBに増えた分は自動で末尾に追加）
+    const KNOWN_RARITIES = ['Basic','Blitz Deck','Common','Fabled','Gold','Legendary','Majestic','Marvel','Promo','Rare','Token','Super Rare'];
+
+    async function loadRarities(){
+  const sel = $("rarity");
+
+  // cards_api から重複なしで取得（distinct）
+  const { data, error } = await supabase
+  .from('cards_api_v2')  // ← A案で作った新しいビュー名に！
+  .select('product_code, number, name, kana, rarity, price_sell, price_buy, wanted, fable_sell, tf_sell, tf_buy, updated_at')
+  // .ilike(...) など検索条件はそのまま
+  .limit(100);
+
+  const dbList = (!error && Array.isArray(data))
+    ? data.map(r => r.rarity).filter(Boolean)
+    : [];
+
+  const extras = Array.from(new Set(
+    dbList.filter(r => !KNOWN_RARITIES.includes(r))
+  )).sort((a,b) => a.localeCompare(b));
+
+  const finalList = [...KNOWN_RARITIES, ...extras];
+
+  const current = sel.value;
+  sel.innerHTML =
+    '<option value="">Rarity: すべて</option>' +
+    finalList.map(r => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('');
+
+  if (finalList.includes(current)) sel.value = current;
+}
+
+
+    let page = 1;         // 1始まり
+    const pageSize = 100; // 1ページ最大件数
+    let composing = false; // 日本語IMEの変換中フラグ
+    let reqId = 0;       // 検索の世代管理（古い結果を捨てる）
+    const saveTimers = {}; // 自動保存のデバウンス管理
+    let wantedOnly = false; // Wantedが1以上のものだけ表示
+
+    $("q").addEventListener("compositionstart", () => composing = true);
+    $("q").addEventListener("compositionend", () => { composing = false; triggerSearch(); });
+
+    $("q").addEventListener("input", () => debounceSearch());
+    $("rarity").addEventListener("change", () => { page = 1; triggerSearch(); });
+    $("order").addEventListener("change", () => { page = 1; triggerSearch(); });
+    $("clear").addEventListener("click", () => {
+      $("q").value = "";
+      wantedOnly = false;
+      updateWantedFilterButton();
+      page = 1;
+      triggerSearch();
+    });
+    $("wantedOnly").addEventListener("click", () => {
+      wantedOnly = true;
+      updateWantedFilterButton();
+      page = 1;
+      triggerSearch();
+    });
+    $("clearWantedAll").addEventListener("click", clearAllWanted);
+    $("prev").addEventListener("click", () => { if (page > 1) { page--; triggerSearch(); } });
+    $("next").addEventListener("click", () => { page++; triggerSearch(); });
+
+    let t = null;
+    function debounceSearch(){
+      if (composing) return;
+      if (t) clearTimeout(t);
+      t = setTimeout(() => { page = 1; triggerSearch(); }, 250);
+    }
+
+    function escOrTerm(s){
+      // PostgRESTのorクエリでコンマ等が混じると壊れるので最低限のエスケープ
+      return String(s).replace(/,/g, '\,').replace(/[()]/g, '');
+    }
+
+  function updateWantedFilterButton(){
+    const btn = $("wantedOnly");
+    if (!btn) return;
+    btn.classList.toggle("wanted-filter-on", wantedOnly);
+    btn.textContent = wantedOnly ? "Wantedのみ表示中" : "Wantedのみ表示";
+  }
+
+  async function triggerSearch(){
+  const myId = ++reqId;
+  const q = $("q").value.trim();
+  const rarity = $("rarity").value;
+  const [field, dir] = $("order").value.split(".");
+
+  // クエリを分解：含める語 / 除外語（先頭が-）
+  const terms = q ? q.split(/\s+/).filter(Boolean) : [];
+  const includeTerms = terms.filter(t => !t.startsWith("-"));
+  const excludeTerms = terms.filter(t => t.startsWith("-")).map(t => t.slice(1)).filter(Boolean);
+
+  // ===== データ取得（ページング）=====
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+  let q1 = supabase.from('cards_api_v2')
+  .select('product_code, number, name, kana, rarity, price_sell, price_buy, wanted, fable_sell, tf_sell, tf_buy, updated_at');
+
+
+  for (const t of includeTerms){
+    const s = escOrTerm(t);
+    q1 = q1.or(`name.ilike.%${s}%,kana.ilike.%${s}%,product_code.ilike.%${s}%`);
+  }
+  for (const t of excludeTerms){
+    const s = escOrTerm(t);
+    q1 = q1
+      .not('name', 'ilike', `%${s}%`)
+      .not('kana', 'ilike', `%${s}%`)
+      .not('product_code', 'ilike', `%${s}%`);
+  }
+  if (rarity) q1 = q1.eq('rarity', rarity);
+  if (wantedOnly) q1 = q1.gt('wanted', 0);
+
+  const orderValue = $("order").value;
+
+if (orderValue.includes("+")) {
+  // 例: "kana.asc+product_code.asc"
+  for (const part of orderValue.split("+")) {
+    const [f, d] = part.split(".");
+    q1 = q1.order(f, { ascending: d === "asc" });
+  }
+} else {
+  const [f, d] = orderValue.split(".");
+  q1 = q1.order(f, { ascending: d === "asc" });
+}
+
+q1 = q1.range(from, to);
+
+
+  const { data, error } = await q1;
+  // 古い検索結果は表示しない（検索の取りこぼしではなく、表示の上書き事故防止）
+  if (myId !== reqId) return;
+
+  if (error) { console.error(error); alert('検索に失敗: ' + error.message); return; }
+
+  // 次ページへ行って結果が0件なら、1つ前に戻す（件数カウント無しでも迷子になりにくい）
+  if ((data?.length || 0) === 0 && page > 1) {
+    page--;
+    triggerSearch();
+    return;
+  }
+
+  renderRows(data || []);
+  $("count").textContent = wantedOnly ? "Wantedのみ表示中" : "";
+
+  $("pageInfo").textContent = `ページ ${page}`;
+  $("prev").disabled = (page <= 1);
+  $("next").disabled = ((data?.length || 0) < pageSize);
+}
+
+
+
+    function yen(n){
+      if (typeof n !== 'number') return '';
+      return n.toLocaleString('ja-JP', { style: 'currency', currency: 'JPY', maximumFractionDigits: 0 });
+    }
+
+    async function updatePrice(productCode, column, value){
+  try{
+    const numValue = Number(value) || 0;
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('cards')
+      .update({ [column]: numValue, updated_at: now })
+      .eq('Product Code', productCode)
+      .select('updated_at')
+      .single();
+
+    if (error) {
+      console.error(error);
+      return { ok:false, msg: error.message || "更新に失敗しました" };
+    }
+    return { ok:true, updated_at: data?.updated_at || now };
+  }catch(e){
+    console.error(e);
+    return { ok:false, msg: e.message || "更新でエラー" };
+  }
+}
+
+async function clearAllWanted(){
+  const first = confirm('本当に削除しますか？\nWantedを全て0にします。');
+  if (!first) return;
+
+  const typed = prompt('Wantedを全て0にします。実行するには DELETE と入力してください。');
+  if (typed !== 'DELETE') {
+    showToast('キャンセルしました', '#6b4a1f');
+    return;
+  }
+
+  const btn = $("clearWantedAll");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '削除中…';
+
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('cards')
+    .update({ "Wanted": 0, updated_at: now })
+    .gt('Wanted', 0);
+
+  btn.disabled = false;
+  btn.textContent = original;
+
+  if (error) {
+    console.error(error);
+    showToast('Wanted削除に失敗: ' + error.message, '#9b2c2c');
+    return;
+  }
+
+  showToast('Wantedを全て0にしました');
+  page = 1;
+  triggerSearch();
+}
+
+function autoSavePrice(productCode, column, value, statusEl, updatedAtEl){
+  if (!statusEl) return;
+
+  statusEl.textContent = "入力中...";
+  statusEl.className = "saving";
+
+  const key = `${productCode}-${column}`;
+  clearTimeout(saveTimers[key]);
+
+  saveTimers[key] = setTimeout(async () => {
+    statusEl.textContent = "保存中...";
+    statusEl.className = "saving";
+
+    const res = await updatePrice(productCode, column, value);
+
+    if (res.ok) {
+      statusEl.textContent = "保存済み";
+      statusEl.className = "saved";
+      if (updatedAtEl) updatedAtEl.textContent = formatTime(res.updated_at);
+      showToast("自動保存しました");
+    } else {
+      statusEl.textContent = "保存失敗";
+      statusEl.className = "error";
+      showToast(res.msg || "更新に失敗しました", "#9b2c2c");
+    }
+  }, 500);
+}
+
+
+
+    function showToast(message, color = "#2d7a46") {
+  const toast = document.getElementById("toast");
+  if (!toast) return; // 念のため
+  toast.textContent = message;
+  toast.style.background = color;
+  toast.style.opacity = "1";
+  toast.style.transform = "translateY(0)";
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => {
+    toast.style.opacity = "0";
+    toast.style.transform = "translateY(-6px)";
+  }, 1800); // 約2秒で消える
+}
+
+function formatTime(t){
+  if (!t) return '';
+  const d = new Date(t);
+  if (isNaN(d)) return '';
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// CSV用にセルを整形する関数
+function csvField(val){
+  if (val == null) return '';
+  const s = String(val);
+  // カンマやダブルクオートを含む場合は囲む
+  if (/[",\n]/.test(s)){
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+
+function applyWantedStyle(tr, input, wantedValue){
+  const isWanted = Number(wantedValue) >= 1;
+  input.classList.toggle("wanted-active", isWanted);
+  tr.classList.toggle("wanted-row", isWanted);
+}
+
+function renderRows(rows){
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+
+  if (!rows || rows.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="13" style="text-align:center;color:#9fb0c5;padding:30px;">表示できるデータがありません</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
+  for (const r of rows){
+    const tr = document.createElement("tr");
+
+    const td = (text, cls) => {
+      const el = document.createElement("td");
+      if (cls) el.className = cls;
+      el.textContent = text ?? "";
+      return el;
+    };
+
+    // 基本情報
+    tr.appendChild(td(r.product_code ?? "", "code wanted-text"));
+    tr.appendChild(td(r.number ?? "", "wanted-text"));
+    tr.appendChild(td(r.name ?? "", "wanted-text"));
+    tr.appendChild(td(r.kana ?? "", "wanted-text"));
+
+    const tdRarity = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = r.rarity ?? "";
+    tdRarity.appendChild(badge);
+    tr.appendChild(tdRarity);
+
+    const statusEl = document.createElement("td");
+    statusEl.className = "saved";
+    statusEl.textContent = "保存済み";
+
+    const updatedAtEl = document.createElement("td");
+    updatedAtEl.className = "updated-at";
+    updatedAtEl.textContent = formatTime(r.updated_at);
+
+    // Sell（編集可・自動保存）
+    const tdSell = document.createElement("td");
+    tdSell.className = "code";
+    const inSell = document.createElement("input");
+    inSell.className = "num-input";
+    inSell.type = "number";
+    inSell.min = "0";
+    inSell.step = "1";
+    const sellVal = Number(r.price_sell);
+    inSell.value = Number.isFinite(sellVal) ? String(sellVal) : "0";
+    inSell.addEventListener("focus", () => inSell.select());
+    inSell.addEventListener("click", () => inSell.select());
+    inSell.addEventListener("input", () => autoSavePrice(r.product_code, "Sell", inSell.value, statusEl, updatedAtEl));
+    tdSell.appendChild(inSell);
+    tr.appendChild(tdSell);
+
+    // Buy（編集可・自動保存）
+    const tdBuy = document.createElement("td");
+    tdBuy.className = "code";
+    const inBuy = document.createElement("input");
+    inBuy.className = "num-input";
+    inBuy.type = "number";
+    inBuy.min = "0";
+    inBuy.step = "1";
+    const buyVal = Number(r.price_buy);
+    inBuy.value = Number.isFinite(buyVal) ? String(buyVal) : "0";
+    inBuy.addEventListener("focus", () => inBuy.select());
+    inBuy.addEventListener("click", () => inBuy.select());
+    inBuy.addEventListener("input", () => autoSavePrice(r.product_code, "Buy", inBuy.value, statusEl, updatedAtEl));
+    tdBuy.appendChild(inBuy);
+    tr.appendChild(tdBuy);
+
+    // Wanted（高価買取リスト用・自動保存）
+    const tdWanted = document.createElement("td");
+    tdWanted.className = "code wanted-cell";
+    const inWanted = document.createElement("input");
+    inWanted.className = "wanted-input";
+    inWanted.type = "number";
+    inWanted.min = "0";
+    inWanted.step = "1";
+    const wantedVal = Number(r.wanted);
+    inWanted.value = Number.isFinite(wantedVal) ? String(wantedVal) : "0";
+    applyWantedStyle(tr, inWanted, inWanted.value);
+    inWanted.addEventListener("focus", () => inWanted.select());
+    inWanted.addEventListener("click", () => inWanted.select());
+    inWanted.addEventListener("input", () => {
+      applyWantedStyle(tr, inWanted, inWanted.value);
+      autoSavePrice(r.product_code, "Wanted", inWanted.value, statusEl, updatedAtEl);
+    });
+    tdWanted.appendChild(inWanted);
+    tr.appendChild(tdWanted);
+
+    // 参照表示（編集不可）
+    tr.appendChild(td(Number.isFinite(Number(r.fable_sell)) ? String(r.fable_sell) : "", "code"));
+    tr.appendChild(td(Number.isFinite(Number(r.tf_sell))    ? String(r.tf_sell)    : "", "code"));
+    tr.appendChild(td(Number.isFinite(Number(r.tf_buy))     ? String(r.tf_buy)     : "", "code"));
+
+    tr.appendChild(statusEl);
+    tr.appendChild(updatedAtEl);
+
+    tbody.appendChild(tr);
+  }
+}
+
+
+
+    // ===== CSVエクスポート =====
+    $("exportCsv").addEventListener('click', exportCsv);
+    async function exportCsv(){
+  const q = $("q").value.trim();
+  const rarity = $("rarity").value;
+  const [field, dir] = $("order").value.split(".");
+
+  // 最大10000件まで、現在の並び順で取得
+  let q1 = supabase.from('cards_api_v2')
+  .select('product_code, number, name, kana, rarity, price_sell, price_buy, wanted, fable_sell, tf_sell, tf_buy, updated_at')
+  .limit(10000);
+
+  if (q) q1 = q1.or(`name.ilike.%${escOrTerm(q)}%,kana.ilike.%${escOrTerm(q)}%,product_code.eq.${escOrTerm(q)}`);
+  if (rarity) q1 = q1.eq('rarity', rarity);
+  if (wantedOnly) q1 = q1.gt('wanted', 0);
+  q1 = q1.order(field, { ascending: dir === 'asc' });
+
+  const { data, error } = await q1;
+  if (error){ alert('CSV作成に失敗: ' + (error.message || JSON.stringify(error))); return; }
+
+  const rows = data || [];
+  // ← 見出しに Updated At を追加（不要なら外してOK）
+  const header = ['Product Code','Number','Product Name','Spelling','Rarity','Sell','Buy','Wanted','Updated At'];
+  const lines = [header.join(',')];
+
+  for (const r of rows){
+    const rec = [
+      r.product_code, r.number, r.name, r.kana, r.rarity, r.price_sell, r.price_buy, r.wanted,
+      formatTime(r.updated_at)   // 見やすい書式で出力。ISOが良ければ r.updated_at のままでもOK
+    ].map(csvField);
+    lines.push(rec.join(','));
+  }
+
+  const csvText = '\uFEFF' + lines.join('\r\n');
+  const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `cards_export_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+
+    // ===== CSV → UPSERT SQL 生成（管理者がSQL Editorで実行） =====
+    $("importCsvBtn").addEventListener('click', ()=> $("importCsv").click());
+    $("importCsv").addEventListener('change', async (e)=>{
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (!rows.length){ alert('CSVが空です'); return; }
+      // 1行目ヘッダ対応
+      const head = rows[0].map(h=>h.trim());
+      const idx = (name)=> head.findIndex(h=>h.toLowerCase()===name.toLowerCase());
+      const ci = {
+        code: idx('Product Code'),
+        number: idx('Number'),
+        name: idx('Product Name'),
+        kana: idx('Spelling'),
+        rarity: idx('Rarity'),
+        sell: idx('Sell'),
+        buy: idx('Buy'),
+      };
+      if (Object.values(ci).some(i=>i<0)){
+        alert('ヘッダ行が想定と異なります。必要列: Product Code, Number, Product Name, Spelling, Rarity, Sell, Buy');
+        return;
+      }
+      const values = [];
+      for (let i=1;i<rows.length;i++){
+        const r = rows[i];
+        if (!r || r.length===0) continue;
+        const code = sqlQuoteChar10(cleanDigits(r[ci.code]||''));
+        if (code === null) continue; // コード空はスキップ
+        const number = sqlQuote(r[ci.number]||'');
+        const name = sqlQuote(r[ci.name]||'');
+        const kana = sqlQuote(r[ci.kana]||'');
+        const rarity = sqlQuote(r[ci.rarity]||'');
+        const sell = toInt(cleanDigits(r[ci.sell]||''));
+        const buy  = toInt(cleanDigits(r[ci.buy]||''));
+        values.push(`(${code}, ${number}, ${name}, ${kana}, ${rarity}, ${sell}, ${buy})`);
+      }
+      if (!values.length){ alert('有効な行がありません'); return; }
+      const chunks = chunk(values, 400); // 1ステートメントに最大400行
+      let sql = `-- CSVアップサート: cards テーブルを更新
+`+
+                `-- 注意: 実行前に必要ならトランザクションを使ってください
+`+
+                `BEGIN;
+`;
+      for (const part of chunks){
+        sql += `
+INSERT INTO public.cards ("Product Code","Number","Product Name","Spelling","Rarity","Sell","Buy")
+VALUES
+  ${part.join(',  ')}
+ON CONFLICT ("Product Code") DO UPDATE SET
+  "Number"=EXCLUDED."Number",
+  "Product Name"=EXCLUDED."Product Name",
+  "Spelling"=EXCLUDED."Spelling",
+  "Rarity"=EXCLUDED."Rarity",
+  "Sell"=EXCLUDED."Sell",
+  "Buy"=EXCLUDED."Buy",
+  updated_at = now();
+`;
+      }
+      sql += `
+COMMIT;
+`;
+      const blob = new Blob([sql], {type:'text/plain;charset=utf-8;'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `cards_upsert_${new Date().toISOString().slice(0,10)}.sql`;
+      a.click();
+      e.target.value = '';
+    });
+
+    function parseCsv(text){
+      // 簡易CSVパーサ（CRLF/CR/LF対応・ダブルクォート対応）
+      const rows=[]; let cur=[]; let field=''; let q=false; let i=0;
+      while(i<text.length){
+        const c=text[i];
+        if (q){
+          if (c==='"'){
+            if (text[i+1]==='"'){ field+='"'; i++; } else { q=false; }
+          } else { field+=c; }
+        } else {
+          if (c==='"'){ q=true; }
+          else if (c===','){ cur.push(field); field=''; }
+          else if (c==='' || c===''){ if (field!=='' || cur.length){ cur.push(field); rows.push(cur); cur=[]; field=''; } if (c==='' && text[i+1]==='') i++; }
+          else { field+=c; }
+        }
+        i++;
+      }
+      if (field!=='' || cur.length){ cur.push(field); rows.push(cur); }
+      return rows.filter(r=>r.length>0);
+    }
+    function sqlQuote(s){ return `'${String(s).replace(/'/g, "''")}'`; }
+    function sqlQuoteChar10(s){
+      const v = (String(s||'').replace(/[^0-9]/g,'')).slice(0,10).padStart(10,'0');
+      if (!v) return null;
+      return `'${v.replace(/'/g, "''")}'`;
+    }
+    function cleanDigits(s){ return String(s).replace(/[^0-9]/g,''); }
+    function toInt(s){ const n = parseInt(s||'0',10); return Number.isFinite(n)? n : 0; }
+    function chunk(arr, n){ const out=[]; for(let i=0;i<arr.length;i+=n) out.push(arr.slice(i,i+n)); return out; }
+
+    // 初回ロードはログイン確認後に実行
+    initAuth();
+  });
+  </script>
+</head>
+<body>
+  <div class="login-wrap" id="loginWrap">
+    <div class="login-card">
+      <h1>FaBカードDB 管理ログイン</h1>
+      <p>編集をするにはログインしてください。</p>
+
+      <label for="loginEmail">メールアドレス</label>
+      <input id="loginEmail" type="email" autocomplete="username" placeholder="admin@example.com" />
+
+      <label for="loginPassword">パスワード</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Password" />
+
+      <div class="login-actions">
+        <button id="loginBtn" type="button">ログイン</button>
+      </div>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </div>
+
+  <div class="wrap" id="appWrap" style="display:none;">
+    <div class="topbar">
+      <h1>FaBカードDB リアルタイム検索</h1>
+      <div class="row">
+        <span class="user-pill" id="userEmail">ログイン中</span>
+        <button id="logoutBtn" type="button">ログアウト</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <input id="q" type="text" placeholder="商品名 / カナ / 商品コード を入力… (例: Valda / ヴァルダ / 0001234567)" autocomplete="off" />
+        <select id="rarity">
+          <option value="">Rarity: すべて</option>
+        </select>
+        <select id="order">
+  <option value="price_sell.asc">売価 安い順</option>
+  <option value="price_sell.desc">売価 高い順</option>
+  <option value="price_buy.desc">買取 高い順</option>
+  <option value="price_buy.asc">買取 安い順</option>
+  <option value="product_code.asc">商品番号 昇順</option>
+  <option value="name.asc">商品名 A→Z</option>
+  <option value="kana.asc+product_code.asc">Spelling A→Z</option>
+  
+  <!-- 追加 ↓↓↓ -->
+  <option value="updated_at.desc">更新日時 新しい順</option>
+  <option value="updated_at.asc">更新日時 古い順</option>
+</select>
+
+        <button id="clear">クリア</button>
+        <button id="wantedOnly">Wantedのみ表示</button>
+        <button id="clearWantedAll" class="danger-btn">Wanted全削除</button>
+        <div class="right count" id="count"></div>
+      </div>
+<div class="hint">※ 入力すると0.25秒後に自動検索します。Sell / Buy / Wanted はクリックで全選択、入力後0.5秒で自動保存します。Wantedのみ表示はクリアで解除されます。最大100件まで表示。</div>
+
+<!-- ▼ 追加：トースト（テーブルの真上） -->
+<div id="toast" style="
+  position: relative;
+  margin: 10px 0 0 0;
+  padding: 8px 14px;
+  background: #2d7a46;
+  color: #fff;
+  border-radius: 8px;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity .25s ease, transform .25s ease;
+  width: fit-content;
+  pointer-events: none;
+  z-index: 100;
+"></div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Product Code</th>
+        <th>Number</th>
+        <th>Product Name</th>
+        <th>Spelling</th>
+        <th>Rarity</th>
+        <th>Sell</th>
+        <th>Buy</th>
+        <th>Wanted</th>
+        <th>Fable Sell</th>
+        <th>TF Sell</th>
+        <th>TF Buy</th>
+        <th>保存状態</th>
+        <th>更新日時</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<div class="controls">
+  <button id="prev">前へ</button>
+  <button id="next">次へ</button>
+  <span class="footer" id="pageInfo"></span>
+  <div class="right">
+    <button id="exportCsv">表示結果をCSVダウンロード</button>
+    <label style="margin-left:8px;">
+      <input type="file" id="importCsv" accept=".csv" style="display:none;">
+      <button id="importCsvBtn">更新用CSV → SQL生成</button>
+    </label>
+  </div>
+</div>
+
+<div class="footer">接続先: <span class="code" id="env"></span></div>
+  </div>
+</body>
+</html>
